@@ -20,6 +20,33 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from ingest import ingest_csv, setup_database
 
 
+def _check_password() -> bool:
+    """Simple password gate using Streamlit secrets.
+
+    Set APP_PASSWORD in `.streamlit/secrets.toml` locally or in Streamlit Cloud.
+    """
+    # If no password configured, allow access (development convenience)
+    app_pw = st.secrets.get("APP_PASSWORD", None)
+    if not app_pw:
+        return True
+
+    if "_authed" in st.session_state and st.session_state.get("_authed") is True:
+        return True
+
+    def _do_login():
+        entered = st.session_state.get("_pw", "")
+        if entered == app_pw:
+            st.session_state["_authed"] = True
+        else:
+            st.session_state["_authed"] = False
+            st.error("Incorrect password. Try again.")
+
+    st.warning("This app is password protected.")
+    st.text_input("Password", type="password", key="_pw")
+    st.button("Log in", on_click=_do_login)
+    return st.session_state.get("_authed", False)
+
+
 def migrate_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Ensure required derived columns exist for legacy databases.
 
@@ -1126,6 +1153,10 @@ def main():
     
     st.title("⛷️ Snowsports School Analytics")
     st.markdown("Daily Hill Sheet ingestion and analytics dashboard")
+    
+    # Password gate: if not authenticated, stop rendering the rest of the app
+    if not _check_password():
+        st.stop()
     
     # Initialize database
     init_database()
