@@ -133,7 +133,7 @@ def derive_fields(df: pl.DataFrame) -> pl.DataFrame:
         
         # Age band logic (Program defaults to Kids)
         pl.when(
-            pl.any([
+            pl.any_horizontal(*[
                 pl.col('task_name_clean').str.contains(tok) for tok in TaskCategorizer.KIDS_TOKENS
             ]) | pl.col('task_type').cast(pl.Utf8).str.contains('Program')
         ).then(pl.lit('Kids')).otherwise(pl.lit('Adults')).alias('age_band'),
