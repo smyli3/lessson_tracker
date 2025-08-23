@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Local data (keep prod repo clean)
+flaik.duckdb
+*.duckdb
+*.parquet
+temp_*.csv
+*.csv
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs
+*.log
