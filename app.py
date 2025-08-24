@@ -391,14 +391,15 @@ def dashboards_tab():
                 CASE WHEN level = 'Fencing/Setup' THEN 
                     CAST(date AS VARCHAR) || '|' || instructor || '|FS'
                 ELSE booking_id END AS unit_id,
-                instructor, age_band, level, week, is_teaching, task_category
+                instructor, age_band, level, week, is_teaching, task_category,
+                CASE WHEN task_category = 'Lesson' AND level <> 'Private' THEN 0.5 ELSE 1 END AS level_weight
             FROM bookings
         )
         SELECT 
             instructor,
             age_band,
             level,
-            COUNT(*) as count
+            SUM(level_weight) as count
         FROM base
     """
     
@@ -431,19 +432,20 @@ def dashboards_tab():
                 CASE WHEN level = 'Fencing/Setup' THEN 
                     CAST(date AS VARCHAR) || '|' || instructor || '|FS'
                 ELSE booking_id END AS unit_id,
-                instructor, level, week, is_teaching, task_category, age_band
+                instructor, level, week, is_teaching, task_category, age_band,
+                CASE WHEN task_category = 'Lesson' AND level <> 'Private' THEN 0.5 ELSE 1 END AS level_weight
             FROM bookings
         )
         SELECT 
             instructor,
-            SUM(CASE WHEN level = '1st Time' THEN 1 ELSE 0 END) as "1st Time",
-            SUM(CASE WHEN level = 'Novice' THEN 1 ELSE 0 END) as "Novice",
-            SUM(CASE WHEN level = 'Beginner' THEN 1 ELSE 0 END) as "Beginner",
-            SUM(CASE WHEN level = 'Intermediate' THEN 1 ELSE 0 END) as "Intermediate",
-            SUM(CASE WHEN level = 'Advanced' THEN 1 ELSE 0 END) as "Advanced",
-            SUM(CASE WHEN level = 'Freestyle' THEN 1 ELSE 0 END) as "Freestyle",
-            SUM(CASE WHEN level = 'Big Carpet' THEN 1 ELSE 0 END) as "Big Carpet",
-            SUM(CASE WHEN level = 'Little Carpet' THEN 1 ELSE 0 END) as "Little Carpet",
+            SUM(CASE WHEN level = '1st Time' THEN level_weight ELSE 0 END) as "1st Time",
+            SUM(CASE WHEN level = 'Novice' THEN level_weight ELSE 0 END) as "Novice",
+            SUM(CASE WHEN level = 'Beginner' THEN level_weight ELSE 0 END) as "Beginner",
+            SUM(CASE WHEN level = 'Intermediate' THEN level_weight ELSE 0 END) as "Intermediate",
+            SUM(CASE WHEN level = 'Advanced' THEN level_weight ELSE 0 END) as "Advanced",
+            SUM(CASE WHEN level = 'Freestyle' THEN level_weight ELSE 0 END) as "Freestyle",
+            SUM(CASE WHEN level = 'Big Carpet' THEN level_weight ELSE 0 END) as "Big Carpet",
+            SUM(CASE WHEN level = 'Little Carpet' THEN level_weight ELSE 0 END) as "Little Carpet",
             SUM(CASE WHEN level = 'Fencing/Setup' THEN 1 ELSE 0 END) as "Fencing/Setup",
             SUM(CASE WHEN level = 'Private' THEN 1 ELSE 0 END) as "Private",
             SUM(CASE WHEN level = 'Training' THEN 1 ELSE 0 END) as "Training",
