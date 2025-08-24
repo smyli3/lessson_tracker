@@ -21,7 +21,7 @@ import time
 
 def detect_header_row(file_path: str) -> int:
     """Detect the row containing the actual headers (Date (YYYY/MM/DD))."""
-    with open(file_path, 'r', encoding='utf-8') as f:
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
         for i, line in enumerate(f):
             if 'Date (YYYY/MM/DD)' in line:
                 return i
@@ -52,6 +52,19 @@ def detect_delimiter(file_path: str) -> str:
     if counts[delim] == 0:
         return ','
     return delim
+
+
+def detect_encoding(file_path: str) -> str:
+    """Detect basic BOM-based encoding. Returns 'utf-16-le', 'utf-16-be', 'utf-8-sig', or 'utf-8'."""
+    with open(file_path, 'rb') as fb:
+        head = fb.read(4)
+    if head.startswith(b'\xff\xfe'):
+        return 'utf-16-le'
+    if head.startswith(b'\xfe\xff'):
+        return 'utf-16-be'
+    if head.startswith(b'\xef\xbb\xbf'):
+        return 'utf-8-sig'
+    return 'utf-8'
 
 
 def normalize_column_names(df: pl.DataFrame) -> pl.DataFrame:
@@ -402,46 +415,65 @@ def ingest_csv(file_path: str, db_path: str = 'flaik.duckdb', conn: duckdb.DuckD
     """
     print(f"Processing {file_path}...")
     
-    # Detect header row and delimiter
+    # Detect header row, delimiter, and encoding
     header_row = detect_header_row(file_path)
     print(f"Found headers at row {header_row + 1}")
     delimiter = detect_delimiter(file_path)
     human_delim = {"\t": "TAB", ",": ",", ";": ";", "|": "|"}.get(delimiter, delimiter)
     print(f"Detected delimiter: {human_delim}")
+    encoding = detect_encoding(file_path)
+    print(f"Detected encoding: {encoding}")
     
-    # Read CSV with Polars - handle mixed data types safely
-    try:
-        df = pl.read_csv(
-            file_path,
-            skip_rows=header_row,
-            try_parse_dates=False,
-            ignore_errors=False,
-            separator=delimiter,
-            infer_schema_length=0,  # scan whole file for robust types
-            quote_char='"',
-            null_values=["", "NULL", "NaN"],
-            truncate_ragged_lines=True,
-            has_header=True,
-            rechunk=True,
-        )
-    except Exception as e:
-        print(f"Primary CSV read failed: {e}. Falling back to pandas -> polars.")
-        # Fallback: read with pandas then convert
+    # Read CSV with appropriate engine based on encoding
+    if encoding.startswith('utf-16'):
+        print("Using pandas for UTF-16 CSV read")
         import pandas as pd
-        try:
-            df_pandas = pd.read_csv(
-                file_path,
-                skiprows=header_row,
-                dtype=str,
-                sep=delimiter if delimiter != "\t" else "\t",
-                engine='python',
-                quoting=0,
-                on_bad_lines='skip'
-            )
-        except Exception as e2:
-            print(f"Pandas read also failed: {e2}")
-            raise
+        df_pandas = pd.read_csv(
+            file_path,
+            skiprows=header_row,
+            dtype=str,
+            sep=delimiter if delimiter != "\t" else "\t",
+            engine='python',
+            quoting=0,
+            on_bad_lines='skip',
+            encoding=encoding,
+        )
         df = pl.from_pandas(df_pandas)
+    else:
+        try:
+            df = pl.read_csv(
+                file_path,
+                skip_rows=header_row,
+                try_parse_dates=False,
+                ignore_errors=False,
+                separator=delimiter,
+                infer_schema_length=0,  # scan whole file for robust types
+                quote_char='"',
+                null_values=["", "NULL", "NaN"],
+                truncate_ragged_lines=True,
+                has_header=True,
+                rechunk=True,
+                encoding='utf8' if encoding == 'utf-8' else 'utf8-lossy',
+            )
+        except Exception as e:
+            print(f"Primary CSV read failed: {e}. Falling back to pandas -> polars.")
+            # Fallback: read with pandas then convert
+            import pandas as pd
+            try:
+                df_pandas = pd.read_csv(
+                    file_path,
+                    skiprows=header_row,
+                    dtype=str,
+                    sep=delimiter if delimiter != "\t" else "\t",
+                    engine='python',
+                    quoting=0,
+                    on_bad_lines='skip',
+                    encoding='utf-8' if encoding == 'utf-8' else None,
+                )
+            except Exception as e2:
+                print(f"Pandas read also failed: {e2}")
+                raise
+            df = pl.from_pandas(df_pandas)
     print(f"Read {len(df)} rows and {len(df.columns)} columns")
     
     # Normalize and derive fields
