@@ -160,16 +160,16 @@ def derive_fields(df: pl.DataFrame) -> pl.DataFrame:
         ]).alias('date'),
         
         # Time parsing - defensive and flexible
-        # Try multiple formats and clean whitespace; also accept 'HH.MM'
+        # Normalize whitespace and '.' to ':' before parsing; try multiple formats
         pl.coalesce([
-            pl.col('task_start').cast(pl.Utf8).str.strip().str.strptime(pl.Time, format='%H:%M', strict=False),
-            pl.col('task_start').cast(pl.Utf8).str.strip().str.strptime(pl.Time, format='%H.%M', strict=False),
-            pl.col('task_start').cast(pl.Utf8).str.strip().str.strptime(pl.Datetime, format='%Y-%m-%d %H:%M', strict=False).dt.time(),
+            pl.col('task_start').cast(pl.Utf8).str.strip_chars().str.replace_all(r"\.", ":").str.strptime(pl.Time, format='%H:%M', strict=False),
+            pl.col('task_start').cast(pl.Utf8).str.strip_chars().str.strptime(pl.Time, format='%H.%M', strict=False),
+            pl.col('task_start').cast(pl.Utf8).str.strip_chars().str.strptime(pl.Datetime, format='%Y-%m-%d %H:%M', strict=False).dt.time(),
         ]).alias('start_time'),
         pl.coalesce([
-            pl.col('task_end').cast(pl.Utf8).str.strip().str.strptime(pl.Time, format='%H:%M', strict=False),
-            pl.col('task_end').cast(pl.Utf8).str.strip().str.strptime(pl.Time, format='%H.%M', strict=False),
-            pl.col('task_end').cast(pl.Utf8).str.strip().str.strptime(pl.Datetime, format='%Y-%m-%d %H:%M', strict=False).dt.time(),
+            pl.col('task_end').cast(pl.Utf8).str.strip_chars().str.replace_all(r"\.", ":").str.strptime(pl.Time, format='%H:%M', strict=False),
+            pl.col('task_end').cast(pl.Utf8).str.strip_chars().str.strptime(pl.Time, format='%H.%M', strict=False),
+            pl.col('task_end').cast(pl.Utf8).str.strip_chars().str.strptime(pl.Datetime, format='%Y-%m-%d %H:%M', strict=False).dt.time(),
         ]).alias('end_time'),
         
         # Combine relevant free-text fields for inference (lowercased)
