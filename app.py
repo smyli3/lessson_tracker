@@ -919,7 +919,12 @@ def instructor_explorer_tab():
         # We'll keep Non Teaching for status detection, but optionally exclude it from counts.
         df_counts_base = df_cal.copy()
         if not include_non_teaching:
-            df_counts_base = df_counts_base[~df_counts_base["level"].isin(["Non Teaching", "Fencing/Setup", "Showed Up"])]
+            # For counts, show only group lessons (exclude privates and any non-lesson categories like Meet & Greet)
+            df_counts_base = df_counts_base[
+                (df_counts_base["is_teaching"] == True)
+                & (df_counts_base["task_category"] == "Lesson")
+                & (df_counts_base["level"] != "Private")
+            ]
 
         # Build day -> counts by level, with hours
         df_cal["date"] = pd.to_datetime(df_cal["date"]).dt.date
@@ -928,9 +933,17 @@ def instructor_explorer_tab():
         if "minutes" not in df_counts_base.columns:
             df_counts_base["minutes"] = 0
         df_counts_base["minutes"] = pd.to_numeric(df_counts_base["minutes"], errors="coerce").fillna(0).clip(lower=0)
-        counts = (df_counts_base
-                  .groupby(["date", "level"], as_index=False)  # type: ignore
-                  .agg(count=("level", "size"), minutes=("minutes", "sum")))
+        # Weight sessions: count each group lesson session as 0.5, others as 1.0
+        df_counts_base = df_counts_base.copy()
+        df_counts_base["weight"] = 1.0
+        mask_gl = (df_counts_base["task_category"] == "Lesson") & (df_counts_base["level"] != "Private")
+        df_counts_base.loc[mask_gl, "weight"] = 0.5
+
+        counts = (
+            df_counts_base
+            .groupby(["date", "level"], as_index=False)  # type: ignore
+            .agg(count=("weight", "sum"), minutes=("minutes", "sum"))
+        )
 
         # Build per-day teaching summary
         def day_summary(day_df: pd.DataFrame) -> list[str]:
@@ -1030,11 +1043,17 @@ def instructor_explorer_tab():
                 if summary_lines:
                     body_parts.append("<b>" + " | ".join(summary_lines) + "</b>")
                 if not day_counts.empty:
+                    # Use weighted count for sorting/dominant
                     day_counts = day_counts.sort_values(["count", "level"], ascending=[False, True])
                     count_lines = []
                     for _, row in day_counts.iterrows():
                         hrs = float(row.get("minutes", 0)) / 60.0
-                        count_lines.append(f"{row['level']}: {int(row['count'])} ({hrs:.1f}h)")
+                        # Display count without trailing .0 (e.g., 1 instead of 1.0)
+                        try:
+                            cnt_disp = f"{row['count']:.2f}".rstrip('0').rstrip('.')
+                        except Exception:
+                            cnt_disp = str(row['count'])
+                        count_lines.append(f"{row['level']}: {cnt_disp} ({hrs:.1f}h)")
                     body_parts.append("<small>" + ", ".join(count_lines) + "</small>")
                 body_html = "<br>".join(body_parts) if body_parts else "_—_"
                 # Determine dominant level for color
@@ -1101,7 +1120,11 @@ def instructor_explorer_tab():
         df_charts = df[~df["level"].isin(["Non Teaching", "Fencing/Setup", "Showed Up"])]
 
     st.subheader("Lesson mix by level")
-    level_counts = df_charts.groupby("level", as_index=False).size().rename(columns={"size": "count"})
+    # Weight: 0.5 for group lessons (task_category='Lesson' and level!='Private'), else 1.0
+    df_charts_w = df_charts.copy()
+    df_charts_w["weight"] = 1.0
+    df_charts_w.loc[(df_charts_w["task_category"] == "Lesson") & (df_charts_w["level"] != "Private"), "weight"] = 0.5
+    level_counts = df_charts_w.groupby("level", as_index=False)["weight"].sum().rename(columns={"weight": "count"})
     chart_bar = alt.Chart(level_counts).mark_bar().encode(
         x=alt.X("count:Q", title="Count"),
         y=alt.Y("level:N", sort='-x', title="Level"),
@@ -1125,13 +1148,13 @@ def instructor_explorer_tab():
     st.altair_chart(chart_hrs, use_container_width=True)
 
     st.subheader("Trend over time (weekly)")
-    df_week = df_charts.copy()
+    df_week = df_charts_w.copy()
     df_week["date"] = pd.to_datetime(df_week["date"]).dt.to_period('W').dt.start_time
     trend = alt.Chart(df_week).mark_area(opacity=0.7).encode(
         x=alt.X("date:T", title="Week"),
-        y=alt.Y("count():Q", title="Lessons"),
+        y=alt.Y("sum(weight):Q", title="Lessons (weighted)"),
         color=alt.Color("level:N", title="Level"),
-        tooltip=[alt.Tooltip("date:T", title="Week"), alt.Tooltip("level:N"), alt.Tooltip("count():Q", title="Lessons")]
+        tooltip=[alt.Tooltip("date:T", title="Week"), alt.Tooltip("level:N"), alt.Tooltip("sum(weight):Q", title="Lessons (weighted)")]
     ).properties(height=320)
     st.altair_chart(trend, use_container_width=True)
 
