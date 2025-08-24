@@ -31,40 +31,76 @@ def detect_header_row(file_path: str) -> int:
 def normalize_column_names(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize column names and drop unnamed columns.
 
-    This keeps the ingest resilient to small header changes and
-    ensures the rest of the pipeline can rely on stable names.
+    Makes the ingest resilient to small header changes by:
+    - Dropping 'Unnamed' columns
+    - Trimming whitespace and normalizing case for matching
+    - Mapping common header variants to canonical names
+    - Falling back to regex heuristics (e.g., any column starting with 'date')
     """
-    # Get column names and drop any that start with 'Unnamed'
-    cols_to_keep = [col for col in df.columns if not col.startswith('Unnamed')]
+    # Drop unnamed columns
+    cols_to_keep = [col for col in df.columns if not col.strip().startswith('Unnamed')]
     df = df.select(cols_to_keep)
-    
-    # Rename columns to standard names
-    column_mapping = {
-        'Date (YYYY/MM/DD)': 'date_raw',
-        'Shift Name': 'shift_name',
-        'Shift Type': 'shift_type', 
-        'Shift Start (HH:MM)': 'shift_start',
-        'Shift End (HH:MM)': 'shift_end',
-        'Staff First Name': 'first_name',
-        'Staff Last Name': 'last_name',
-        'Staff ID': 'staff_id',
-        'Payroll ID': 'payroll_id',
-        'Priority Ranking': 'priority_ranking',
-        'Task Name': 'task_name',
-        'Task Type': 'task_type',
-        'Task Start (HH:MM)': 'task_start',
-        'Task End (HH:MM)': 'task_end',
-        'Task Duration': 'task_duration',
-        'Comments': 'comments',
-        'Private Guest Name': 'private_guest_name',
-        'Is Request Private': 'is_request_private',
-        'Private Guest Note': 'private_guest_note'
-    }
-    
-    # Only rename columns that exist
-    existing_mapping = {k: v for k, v in column_mapping.items() if k in df.columns}
-    df = df.rename(existing_mapping)
-    
+
+    # Build a lookup using normalized keys
+    def norm(s: str) -> str:
+        return (
+            s.strip()
+             .replace("\u200b", "")  # zero-width
+             .replace("\ufeff", "")  # BOM
+             .lower()
+        )
+
+    normalized = {norm(c): c for c in df.columns}
+
+    def exists(key_variants: list[str]) -> str | None:
+        for k in key_variants:
+            if k in normalized:
+                return normalized[k]
+        return None
+
+    # Map known variants
+    mapping: dict[str, str] = {}
+
+    # Date columns
+    date_col = exists([
+        'date (yyyy/mm/dd)', 'date (yyyy-mm-dd)', 'date', 'date (dd/mm/yyyy)', 'date (mm/dd/yyyy)'
+    ])
+    if not date_col:
+        # Heuristic: any column that starts with 'date'
+        for k, orig in normalized.items():
+            if k.startswith('date'):
+                date_col = orig
+                break
+    if date_col:
+        mapping[date_col] = 'date_raw'
+
+    # Simple helpers
+    def map_if(found: str | None, to: str):
+        if found:
+            mapping[found] = to
+
+    map_if(exists(['shift name', 'shiftname']), 'shift_name')
+    map_if(exists(['shift type', 'shifttype']), 'shift_type')
+    map_if(exists(['shift start (hh:mm)', 'shift start', 'shift start (hhmm)', 'shiftstart']), 'shift_start')
+    map_if(exists(['shift end (hh:mm)', 'shift end', 'shift end (hhmm)', 'shiftend']), 'shift_end')
+    map_if(exists(['staff first name', 'first name', 'firstname']), 'first_name')
+    map_if(exists(['staff last name', 'last name', 'lastname']), 'last_name')
+    map_if(exists(['staff id', 'staffid', 'staff_id']), 'staff_id')
+    map_if(exists(['payroll id', 'payrollid', 'payroll_id']), 'payroll_id')
+    map_if(exists(['priority ranking', 'priority', 'priorityranking']), 'priority_ranking')
+    map_if(exists(['task name', 'taskname']), 'task_name')
+    map_if(exists(['task type', 'tasktype']), 'task_type')
+    map_if(exists(['task start (hh:mm)', 'task start', 'task start (hhmm)', 'taskstart']), 'task_start')
+    map_if(exists(['task end (hh:mm)', 'task end', 'task end (hhmm)', 'taskend']), 'task_end')
+    map_if(exists(['task duration', 'taskduration']), 'task_duration')
+    map_if(exists(['comments', 'comment']), 'comments')
+    map_if(exists(['private guest name', 'private guest', 'guest name']), 'private_guest_name')
+    map_if(exists(['is request private', 'request private', 'is private']), 'is_request_private')
+    map_if(exists(['private guest note', 'guest note', 'private note']), 'private_guest_note')
+
+    if mapping:
+        df = df.rename(mapping)
+
     return df
 
 
@@ -115,12 +151,26 @@ def derive_fields(df: pl.DataFrame) -> pl.DataFrame:
         (pl.col('first_name').fill_null('').cast(pl.Utf8) + ' ' + pl.col('last_name').fill_null('').cast(pl.Utf8)).alias('instructor'),
         (pl.col('task_type') != 'Non Teaching').alias('is_teaching'),
         
-        # Date parsing - defensive
-        pl.col('date_raw').cast(pl.Utf8).str.strptime(pl.Date, format='%d/%m/%Y', strict=False).alias('date'),
+        # Date parsing - defensive with multiple formats
+        pl.coalesce([
+            pl.col('date_raw').cast(pl.Utf8).str.strptime(pl.Date, format='%d/%m/%Y', strict=False),
+            pl.col('date_raw').cast(pl.Utf8).str.strptime(pl.Date, format='%Y-%m-%d', strict=False),
+            pl.col('date_raw').cast(pl.Utf8).str.strptime(pl.Date, format='%Y/%m/%d', strict=False),
+            pl.col('date_raw').cast(pl.Utf8).str.strptime(pl.Date, format='%m/%d/%Y', strict=False),
+        ]).alias('date'),
         
-        # Time parsing - defensive  
-        pl.col('task_start').cast(pl.Utf8).str.strptime(pl.Time, format='%H:%M', strict=False).alias('start_time'),
-        pl.col('task_end').cast(pl.Utf8).str.strptime(pl.Time, format='%H:%M', strict=False).alias('end_time'),
+        # Time parsing - defensive and flexible
+        # Try multiple formats and clean whitespace; also accept 'HH.MM'
+        pl.coalesce([
+            pl.col('task_start').cast(pl.Utf8).str.strip().str.strptime(pl.Time, format='%H:%M', strict=False),
+            pl.col('task_start').cast(pl.Utf8).str.strip().str.strptime(pl.Time, format='%H.%M', strict=False),
+            pl.col('task_start').cast(pl.Utf8).str.strip().str.strptime(pl.Datetime, format='%Y-%m-%d %H:%M', strict=False).dt.time(),
+        ]).alias('start_time'),
+        pl.coalesce([
+            pl.col('task_end').cast(pl.Utf8).str.strip().str.strptime(pl.Time, format='%H:%M', strict=False),
+            pl.col('task_end').cast(pl.Utf8).str.strip().str.strptime(pl.Time, format='%H.%M', strict=False),
+            pl.col('task_end').cast(pl.Utf8).str.strip().str.strptime(pl.Datetime, format='%Y-%m-%d %H:%M', strict=False).dt.time(),
+        ]).alias('end_time'),
         
         # Combine relevant free-text fields for inference (lowercased)
         (
