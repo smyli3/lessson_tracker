@@ -18,15 +18,22 @@ import altair as alt
 # Add current directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from ingest import ingest_csv, setup_database
+from services.database import Database
+from services.ingestion import IngestionService
 
 
 def _check_password() -> bool:
     """Simple password gate using Streamlit secrets.
 
-    Set APP_PASSWORD in `.streamlit/secrets.toml` locally or in Streamlit Cloud.
+    Set APP_PASSWORD in `.streamlit/secrets.toml` (project .streamlit/ or user home .streamlit/),
+    or set an APP_PASSWORD environment variable. If none is set, allow access locally.
     """
     # If no password configured, allow access (development convenience)
-    app_pw = st.secrets.get("APP_PASSWORD", None)
+    try:
+        app_pw = st.secrets.get("APP_PASSWORD")  # type: ignore[attr-defined]
+    except Exception:
+        # No secrets file present or not readable; fall back to env var
+        app_pw = os.environ.get("APP_PASSWORD")
     if not app_pw:
         return True
 
@@ -72,9 +79,13 @@ def migrate_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def init_database():
-    """Initialize database connection."""
-    if 'db_conn' not in st.session_state:
-        st.session_state.db_conn = setup_database('flaik.duckdb')
+    """Initialize a shared Database instance and return its connection."""
+    if 'db' not in st.session_state:
+        st.session_state.db = Database('flaik.duckdb')
+        st.session_state.db_conn = st.session_state.db.conn
+    elif 'db_conn' not in st.session_state:
+        # Backward-compat in case only db was created
+        st.session_state.db_conn = st.session_state.db.conn
     # Always run lightweight migrations to ensure columns exist on older DBs
     migrate_schema(st.session_state.db_conn)
     return st.session_state.db_conn
@@ -125,9 +136,12 @@ def upload_tab():
         if st.button("Process Upload", type="primary"):
             with st.spinner("Processing CSV..."):
                 try:
-                    # Reuse the existing DB connection to avoid file lock conflicts
+                    # Reuse a shared Database/connection to avoid Windows file locks
                     conn = init_database()
-                    rows_inserted = ingest_csv(temp_path, conn=conn)
+                    if 'ingestion_service' not in st.session_state:
+                        st.session_state.ingestion_service = IngestionService(st.session_state.db)
+                    svc: IngestionService = st.session_state.ingestion_service
+                    rows_inserted = svc.ingest_file(temp_path)
                     if rows_inserted > 0:
                         st.success(f"✅ Successfully inserted {rows_inserted} new records!")
                     else:
