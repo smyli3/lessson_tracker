@@ -28,6 +28,32 @@ def detect_header_row(file_path: str) -> int:
     return 0
 
 
+def detect_delimiter(file_path: str) -> str:
+    """Crude delimiter detection among tab, comma, semicolon, pipe.
+
+    Looks at the first few non-empty lines and picks the delimiter with the
+    most occurrences. Defaults to comma if tie/none.
+    """
+    candidates = ['\t', ',', ';', '|']
+    counts = {c: 0 for c in candidates}
+    lines_checked = 0
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            if not line.strip():
+                continue
+            for c in candidates:
+                counts[c] += line.count(c)
+            lines_checked += 1
+            if lines_checked >= 5:
+                break
+    # Pick the delimiter with highest count
+    delim = max(counts, key=lambda k: counts[k])
+    # If nothing stands out, default to comma
+    if counts[delim] == 0:
+        return ','
+    return delim
+
+
 def normalize_column_names(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize column names and drop unnamed columns.
 
@@ -376,24 +402,47 @@ def ingest_csv(file_path: str, db_path: str = 'flaik.duckdb', conn: duckdb.DuckD
     """
     print(f"Processing {file_path}...")
     
-    # Detect header row
+    # Detect header row and delimiter
     header_row = detect_header_row(file_path)
     print(f"Found headers at row {header_row + 1}")
+    delimiter = detect_delimiter(file_path)
+    human_delim = {"\t": "TAB", ",": ",", ";": ";", "|": "|"}.get(delimiter, delimiter)
+    print(f"Detected delimiter: {human_delim}")
     
     # Read CSV with Polars - handle mixed data types safely
     try:
         df = pl.read_csv(
-            file_path, 
+            file_path,
             skip_rows=header_row,
             try_parse_dates=False,
-            ignore_errors=True
+            ignore_errors=False,
+            separator=delimiter,
+            infer_schema_length=0,  # scan whole file for robust types
+            quote_char='"',
+            null_values=["", "NULL", "NaN"],
+            truncate_ragged_lines=True,
+            has_header=True,
+            rechunk=True,
         )
-    except Exception:
+    except Exception as e:
+        print(f"Primary CSV read failed: {e}. Falling back to pandas -> polars.")
         # Fallback: read with pandas then convert
         import pandas as pd
-        df_pandas = pd.read_csv(file_path, skiprows=header_row, dtype=str)
+        try:
+            df_pandas = pd.read_csv(
+                file_path,
+                skiprows=header_row,
+                dtype=str,
+                sep=delimiter if delimiter != "\t" else "\t",
+                engine='python',
+                quoting=0,
+                on_bad_lines='skip'
+            )
+        except Exception as e2:
+            print(f"Pandas read also failed: {e2}")
+            raise
         df = pl.from_pandas(df_pandas)
-    print(f"Read {len(df)} rows")
+    print(f"Read {len(df)} rows and {len(df.columns)} columns")
     
     # Normalize and derive fields
     df = normalize_column_names(df)
